@@ -21,6 +21,12 @@ import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.support.serializer.JsonDeserializer;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.*;
+import java.security.KeyStore;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -52,17 +58,19 @@ public class KafkaConfig {
         set(SslConfigs.SSL_ENDPOINT_IDENTIFICATION_ALGORITHM_CONFIG, prefix, commonConfigs, env);
 
         // Truststore location
-        String trustStoreLocation = env.getProperty(prefix + SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG);
-        if (trustStoreLocation != null && trustStoreLocation.startsWith("classpath:")) {
-            try {
-                String path = trustStoreLocation.replace("classpath:", "");
-                commonConfigs.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, new ClassPathResource(path).getFile().getAbsolutePath());
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
-        } else {
-            commonConfigs.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, trustStoreLocation);
-        }
+//        String trustStoreLocation = env.getProperty(prefix + SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG);
+//        if (trustStoreLocation != null && trustStoreLocation.startsWith("classpath:")) {
+//            try {
+//                String path = trustStoreLocation.replace("classpath:", "");
+//                commonConfigs.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, new ClassPathResource(path).getFile().getAbsolutePath());
+//            } catch (IOException e) {
+//                throw new RuntimeException(e);
+//            }
+//        } else {
+//            commonConfigs.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, trustStoreLocation);
+//        }
+        String trustStoreLocation = KafkaTruststoreBootstrap.ensureTruststore(env);
+        commonConfigs.put(SslConfigs.SSL_TRUSTSTORE_LOCATION_CONFIG, trustStoreLocation);
     }
 
     // Bean 1: Producer Factory
@@ -123,5 +131,52 @@ public class KafkaConfig {
         if (prefix == null || prefix.isBlank()) prefix = "";
         String value = env.getProperty(prefix + prop);
         if (value != null) configs.put(prop, value);
+    }
+
+    public static class KafkaTruststoreBootstrap {
+
+        public static String ensureTruststore(Environment env) {
+            String caPemSource = env.getProperty("KAFKA_CAPEM_PATH", "/etc/secrets/ca.pem");
+            String password = env.getProperty("spring.kafka." + SslConfigs.SSL_TRUSTSTORE_PASSWORD_CONFIG);
+
+            try {
+                Path tmpDir = Paths.get("/tmp");
+                Path caPemTarget = tmpDir.resolve("ca.pem");
+                Path truststorePath = tmpDir.resolve("client.truststore.jks");
+
+                // 1) Copy ca.pem into /tmp
+                if (!Files.exists(caPemTarget) || Files.size(caPemTarget) == 0) {
+                    Files.copy(Paths.get(caPemSource), caPemTarget, StandardCopyOption.REPLACE_EXISTING);
+                }
+
+                // 2) Generate truststore if missing
+                if (!Files.exists(truststorePath) || Files.size(truststorePath) == 0) {
+
+                    CertificateFactory cf = CertificateFactory.getInstance("X.509");
+                    X509Certificate cert;
+
+                    try (InputStream in = Files.newInputStream(caPemTarget)) {
+                        cert = (X509Certificate) cf.generateCertificate(in);
+                    }
+
+                    KeyStore ks = KeyStore.getInstance("JKS");
+                    ks.load(null, null);
+                    ks.setCertificateEntry("CA", cert);
+
+                    try (OutputStream out = Files.newOutputStream(
+                            truststorePath,
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.TRUNCATE_EXISTING
+                    )) {
+                        ks.store(out, password.toCharArray());
+                    }
+                }
+
+                return truststorePath.toAbsolutePath().toString();
+
+            } catch (Exception e) {
+                throw new RuntimeException("Failed to bootstrap Kafka truststore in /tmp", e);
+            }
+        }
     }
 }
