@@ -2,23 +2,21 @@
 FROM maven:3.9.6-eclipse-temurin-17 AS build
 WORKDIR /app
 
-# Copy only pom first -> allows dependency cache layer
 COPY pom.xml ./
 RUN mvn -q -DskipTests dependency:go-offline
 
-# Now copy sources
 COPY src ./src
 RUN mvn -q -DskipTests package
 
 
 # ---------- RUN STAGE ----------
-FROM eclipse-temurin:17-jre-jammy
+FROM gcr.io/distroless/java17-debian12:nonroot
 WORKDIR /app
 
-COPY --from=build /app/target/*.jar app.jar
+COPY --from=build /app/target/*.jar /app/app.jar
 
 ENV SPRING_PROFILES_ACTIVE=prod
-ENV JAVA_TOOL_OPTIONS="-Xms64m -Xmx192m -XX:+UseSerialGC -XX:MaxMetaspaceSize=128m -Djava.security.egd=file:/dev/./urandom"
+ENV JAVA_TOOL_OPTIONS="-Xms64m -Xmx192m -XX:+UseSerialGC -XX:MaxMetaspaceSize=128m"
 
 EXPOSE 8080
-CMD ["java", "-jar", "app.jar"]
+CMD ["-jar", "/app/app.jar"]
